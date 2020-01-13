@@ -13,6 +13,7 @@ import {
   toEventName,
   CAPTURE_TEXT,
   findNested,
+  isJSXElement,
 } from "./helpers"
 import {
   ServerMessage,
@@ -54,14 +55,17 @@ interface Root {
   component: Component<any, any>
   wsState: WebSocketState
   eventNames: Set<string>
-  handlers: { [key: string]: Handler }
-  aliases: { [key: string]: string }
+  handlers: Record<string, Handler | undefined>
+  aliases: Record<string, string | undefined>
 }
 
 export interface StateTree {
   name: string
-  value: Record<string, any>
+  state: Record<string, any>
   childMap: ChildMap<StateTree>
+  // Whether to merge state with the result of getInitialState() to hot reload
+  // this component.
+  reload: boolean
 }
 
 interface IDStateTree {
@@ -79,7 +83,10 @@ declare module "http" {
   }
 }
 
-const INPUT_TYPE_VALIDATOR: { [key: string]: t.Type<any, any, any> } = {
+const INPUT_TYPE_VALIDATOR: Record<
+  string,
+  t.Type<any, any, any> | undefined
+> = {
   checkbox: t.boolean,
   number: t.number,
 }
@@ -103,19 +110,19 @@ export function createElem(
   attributes = attributes || {}
 
   const hasSelected =
-    (nodeName === "option" && "selected" in attributes) ||
+    (nodeName === "option" && attributes.selected !== undefined) ||
     (nodeName === "select" && containsControlledOption(children))
 
   const isValueInput =
     (nodeName === "input" &&
       (!attributes.type || attributes.type === "text")) ||
     nodeName === "textarea"
-  const hasValue = isValueInput && "value" in attributes
+  const hasValue = isValueInput && attributes.value !== undefined
 
   const isCheckedInput =
     nodeName === "input" &&
     (attributes.type === "checkbox" || attributes.type === "radio")
-  const hasChecked = isCheckedInput && "checked" in attributes
+  const hasChecked = isCheckedInput && attributes.checked !== undefined
 
   if (hasSelected || hasValue || hasChecked) {
     ;(attributes as any)["data-controlled"] = true
@@ -123,17 +130,24 @@ export function createElem(
 
   if (
     isValueInput &&
-    "defaultValue" in attributes &&
-    !("value" in attributes)
+    attributes.defaultValue !== undefined &&
+    attributes.value === undefined
   ) {
     attributes.value = attributes.defaultValue
     delete attributes.defaultValue
   }
 
+  // Must come after the defaultValue case is handled above. This ensures the
+  // defaultValue is properly written to the children.
+  if (nodeName === "textarea" && attributes.value !== undefined) {
+    children = [attributes.value]
+    delete attributes.value
+  }
+
   if (
     isCheckedInput &&
-    "defaultChecked" in attributes &&
-    !("checked" in attributes)
+    attributes.defaultChecked !== undefined &&
+    attributes.checked === undefined
   ) {
     attributes.checked = attributes.defaultChecked
     delete attributes.defaultChecked
@@ -141,22 +155,17 @@ export function createElem(
 
   if (
     nodeName === "option" &&
-    "defaultSelected" in attributes &&
-    !("selected" in attributes)
+    attributes.defaultSelected !== undefined &&
+    attributes.selected === undefined
   ) {
     attributes.selected = attributes.defaultSelected
     delete attributes.defaultSelected
   }
 
-  if (nodeName === "textarea" && "value" in attributes) {
-    children = [attributes.value as string]
-    delete attributes.value
-  }
-
   // For intrinsic elements, change special attributes to data-* equivalents and
   // remove falsy attributes.
   if (typeof nodeName === "string") {
-    if (attributes.key) {
+    if (attributes.key !== undefined) {
       ;(attributes as any)["data-key"] = attributes.key
       delete attributes.key
     }
@@ -202,10 +211,6 @@ function containsControlledOption(
   }
 }
 
-function isJSXElement(child: JSX.Child): child is JSX.Element {
-  return Boolean(child && typeof child === "object" && child.nodeName)
-}
-
 function isControlledOption(jsx: JSX.Element): boolean {
   return jsx.nodeName === "option" && "data-controlled" in jsx.attributes
 }
@@ -234,17 +239,17 @@ export function handleWebSocket(
       seenEventNames: new Set(),
     }
 
-    ws.on("message", data => {
+    ws.on("message", async data => {
       const parsed = tryParseJSON(data.toString())
       const decoded = clientMessageValidator.decode(parsed)
       if (decoded.isRight()) {
-        handleMessage(decoded.value, wsState, req, server)
+        await handleMessage(decoded.value, wsState, req, server)
       }
     })
 
     ws.on("close", async () => {
       const promises = wsState.roots.map(async root => {
-        const stateTree = makeStateTree(root.component)
+        const stateTree = makeStateTree(root.component, true)
         await reloadOptions.saveStateTree(root.component._id, stateTree)
         await root.component._triggerUnmount()
       })
@@ -255,17 +260,23 @@ export function handleWebSocket(
   return wsServer
 }
 
-function makeStateTree(component: Component<any, any>): StateTree {
+function makeStateTree(
+  component: Component<any, any>,
+  reload: boolean,
+): StateTree {
   const childMap: ChildMap<StateTree> = {}
   Object.keys(component._childMap).forEach(key => {
-    const children = component._childMap[key]
-    childMap[key] = children.map(c => makeStateTree(c as Component<any, any>))
+    const children = component._childMap[key]!
+    childMap[key] = children.map(c =>
+      makeStateTree(c as Component<any, any>, reload),
+    )
   })
 
   return {
     name: component.constructor.name,
-    value: (component as any).state,
+    state: (component as any).state,
     childMap,
+    reload,
   }
 }
 
@@ -325,7 +336,17 @@ async function handleMessage(
       roots.forEach(root => {
         root.wsState = wsState
         wsState.roots.push(root)
-        root.component._triggerMount()
+
+        sendMessage(root.wsState.ws, {
+          type: "update",
+          componentID: root.component._id,
+          pNode: toLatestPNode(root.component._pNode),
+          newEventNames: Array.from(root!.eventNames),
+        })
+
+        // Don't wait for this, since we want wsState.mounted and wsState.roots
+        // to be updated atomically. Mounting is an asynchronous event anyway.
+        void root.component._triggerMount()
       })
       wsState.mounted = true
 
@@ -412,16 +433,14 @@ export async function render(
     }
 
     if (purviewState) {
-      sendMessage(root!.wsState.ws, {
-        type: "update",
-        componentID: component._id,
-        pNode: toLatestPNode(pNode),
-        newEventNames: Array.from(root!.eventNames),
-      })
+      return ""
     } else {
-      await reloadOptions.saveStateTree(component._id, makeStateTree(component))
+      await reloadOptions.saveStateTree(
+        component._id,
+        makeStateTree(component, false),
+      )
+      return toHTML(pNode)
     }
-    return toHTML(pNode)
   })
 }
 
@@ -451,15 +470,15 @@ async function makeElem(
     }
 
     // Retain the ordering of child elements by saving the index here.
-    const index = parent._newChildMap[key].length
-    parent._newChildMap[key].push(null)
+    const index = parent._newChildMap[key]!.length
+    parent._newChildMap[key]!.push(null)
 
     return await withComponent(jsx, existing, async component => {
       if (!component) {
         return null
       }
 
-      parent._newChildMap[key][index] = component
+      parent._newChildMap[key]![index] = component
       const pNode = await renderComponent(component, rootID, root)
       const wsState = root && root.wsState
 
@@ -534,9 +553,11 @@ async function makeRegularElem(
             const multiple = (attributes as JSX.SelectHTMLAttributes<any>)
               .multiple
             validator = makeValidator(multiple ? t.array(t.string) : t.string)
+          } else if (nodeName === "textarea") {
+            validator = makeValidator(t.string)
           } else {
-            // Could be a parent of an input/select, or a custom element. Leave
-            // validation up to the user.
+            // Could be a parent of an input/select/textarea, or a custom
+            // element. Leave validation up to the user.
             validator = makeValidator(t.any)
           }
           break
@@ -551,7 +572,7 @@ async function makeRegularElem(
           validator = submitEventValidator
           break
       }
-      root.handlers[eventID].validator = validator
+      root.handlers[eventID]!.validator = validator
     }
 
     if (attr.indexOf(CAPTURE_TEXT) !== -1) {
@@ -566,7 +587,7 @@ async function makeRegularElem(
   if (typeof children === "string") {
     vChildren = [createTextPNode(children)]
   } else if (children instanceof Array) {
-    const promises = mapNested(children as NestedArray<JSX.Child>, child =>
+    const promises = mapNested(children, child =>
       makeChild(child, parent, rootID, root, parentKey + "/" + nodeName),
     )
     vChildren = await Promise.all(promises)
@@ -629,9 +650,10 @@ async function withComponent<T>(
 
     if (existing instanceof Component) {
       component._setProps(props)
+      component._applyChangesetsLocked()
     } else if (existing) {
       component._childMap = existing.childMap
-      await component._initState(existing.value)
+      await component._initState(existing.state, existing.reload)
     } else {
       await component._initState()
     }
@@ -652,22 +674,18 @@ async function renderComponent(
     rootID,
     root,
     "",
-  )) as PNodeRegular
+  )) as PNodeRegular | null
   if (!pNode) {
     return null
   }
 
   pNode.component = component
   component._pNode = pNode
-  if (component._id === rootID) {
-    pNode.data.attrs!["data-root"] = true
-  }
-
   unmountChildren(component)
 
   const newChildMap: ChildMap<Component<any, any>> = {}
   Object.keys(component._newChildMap).forEach(key => {
-    newChildMap[key] = component._newChildMap[key].filter(
+    newChildMap[key] = component._newChildMap[key]!.filter(
       c => c !== null,
     ) as Array<Component<any, any>>
   })
@@ -680,7 +698,7 @@ async function renderComponent(
         return
       }
 
-      const newEventNames = new Set()
+      const newEventNames = new Set<string>()
       root.eventNames.forEach(name => {
         if (!root.wsState.seenEventNames.has(name)) {
           newEventNames.add(name)
@@ -716,6 +734,10 @@ async function renderComponent(
   // parent. In this case, we have to unalias to use the parent component's ID.
   const unaliasedID = root ? unalias(id, root) : id
   pNode.data.attrs!["data-component-id"] = unaliasedID
+  if (unaliasedID === rootID) {
+    pNode.data.attrs!["data-root"] = true
+  }
+
   return pNode
 }
 
@@ -729,7 +751,7 @@ function createTextPNode(text: string): PNode {
 
 function toLatestPNode(pNode: PNodeRegular): PNodeRegular {
   if (pNode.component) {
-    pNode = pNode.component._pNode as PNodeRegular
+    pNode = pNode.component._pNode
   }
   const newChildren = pNode.children.map(child => {
     if ("text" in child) {
@@ -748,18 +770,21 @@ function toLatestPNode(pNode: PNodeRegular): PNodeRegular {
 
 function unmountChildren(component: Component<any, any>): void {
   Object.keys(component._childMap).forEach(key => {
-    const children = component._childMap[key]
+    const children = component._childMap[key]!
     children.forEach(child => {
       if (child instanceof Component) {
-        child._triggerUnmount()
+        // Don't wait for this; unmounting is an asynchronous event.
+        void child._triggerUnmount()
       }
     })
   })
 }
 
 function unalias(id: string, root: Root): string {
-  while (root.aliases[id]) {
-    id = root.aliases[id]
+  let alias = root.aliases[id]
+  while (alias) {
+    id = alias
+    alias = root.aliases[id]
   }
   return id
 }

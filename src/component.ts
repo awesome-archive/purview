@@ -1,6 +1,6 @@
 import nanoid = require("nanoid")
 import { StateTree } from "./purview"
-import { PNode } from "./types/ws"
+import { PNodeRegular } from "./types/ws"
 
 type UpdateFn<S> = (state: Readonly<S>) => Partial<S>
 
@@ -9,7 +9,7 @@ export interface ComponentConstructor<P, S> {
   new (props: P): Component<P, S>
 }
 
-export type ChildMap<T> = Record<string, T[]>
+export type ChildMap<T> = Record<string, T[] | undefined>
 
 interface Component<P, S> {
   getInitialState?(): Promise<S>
@@ -22,8 +22,8 @@ abstract class Component<P, S> {
   public _id: string
   public _childMap: ChildMap<Component<any, any> | StateTree> = {}
   public _newChildMap: ChildMap<Component<any, any> | null> = {}
-  public _handleUpdate: () => Promise<void>
-  public _pNode: PNode
+  public _handleUpdate?: () => Promise<void>
+  public _pNode: PNodeRegular
   public _unmounted = false
 
   // This is set outside of the class and is used to disambiguate stateless
@@ -70,26 +70,29 @@ abstract class Component<P, S> {
     await new Promise(resolve => setImmediate(resolve))
 
     return this._lock(async () => {
-      if (this._unmounted || this._changesets.length === 0) {
-        return
-      }
-
-      this._changesets.forEach(cs => {
-        if (cs instanceof Function) {
-          Object.assign(this.state, cs(this.state))
-        } else {
-          Object.assign(this.state, cs)
-        }
-      })
-      this._changesets = []
-
-      if (this._handleUpdate) {
+      if (this._applyChangesetsLocked() && this._handleUpdate) {
         await this._handleUpdate()
       }
     })
   }
 
-  async _lock<T>(callback: () => T): Promise<T> {
+  _applyChangesetsLocked(): boolean {
+    if (this._unmounted || this._changesets.length === 0) {
+      return false
+    }
+
+    this._changesets.forEach(cs => {
+      if (cs instanceof Function) {
+        Object.assign(this.state, cs(this.state))
+      } else {
+        Object.assign(this.state, cs)
+      }
+    })
+    this._changesets = []
+    return true
+  }
+
+  async _lock<T>(callback: () => T | Promise<T>): Promise<T> {
     if (this._lockedPromise) {
       await this._lockedPromise
       return this._lock(callback)
@@ -104,9 +107,9 @@ abstract class Component<P, S> {
     return this._lockedPromise
   }
 
-  async _initState(savedState?: S): Promise<void> {
+  async _initState(savedState?: S, reload: boolean = true): Promise<void> {
     let initialState = this.state
-    if (this.getInitialState) {
+    if (reload && this.getInitialState) {
       initialState = await this.getInitialState()
     }
     this.state = Object.assign(initialState, savedState)
@@ -115,7 +118,7 @@ abstract class Component<P, S> {
   async _triggerMount(): Promise<void> {
     return this._lock(async () => {
       const promises = Object.keys(this._childMap).map(key => {
-        const childPromises = this._childMap[key].map(child => {
+        const childPromises = this._childMap[key]!.map(child => {
           if (child instanceof Component) {
             return child._triggerMount()
           }
@@ -131,7 +134,7 @@ abstract class Component<P, S> {
   async _triggerUnmount(): Promise<void> {
     return this._lock(async () => {
       const promises = Object.keys(this._childMap).map(key => {
-        const childPromises = this._childMap[key].map(child => {
+        const childPromises = this._childMap[key]!.map(child => {
           if (child instanceof Component) {
             return child._triggerUnmount()
           }

@@ -14,7 +14,34 @@
       "parameter",
       "property-declaration"
     ],
-    "no-unbound-method": true
+    "no-unbound-method": true,
+    "no-conditional-assignment": false,
+    "max-classes-per-file": false,
+    "no-namespace": false,
+    "member-ordering": false,
+    "no-floating-promises": [true, "Bluebird", "AxiosPromise"],
+    "await-promise": [true, "Bluebird", "AxiosPromise"],
+    "variable-name": [
+      true,
+      "ban-keywords",
+      "check-format",
+      "allow-leading-underscore",
+      "allow-pascal-case"
+    ],
+    "no-restricted-globals": [true, "name", "length", "location"],
+    "no-unused-expression": [true, "allow-new"],
+    "strict-boolean-expressions": [
+      true,
+      "allow-null-union",
+      "allow-undefined-union",
+      "allow-string",
+      "allow-mix",
+      "ignore-rhs"
+    ],
+    "no-unnecessary-type-assertion": true,
+    "no-object-literal-type-assertion": [true, {"allow-arguments": true}],
+    "use-default-type-parameter": true,
+    "strict-type-predicates": true
   },
   "linterOptions": {
     "exclude": ["**/*.json"]

@@ -1,5 +1,5 @@
 import { tryParseJSON, isSelect, isInput } from "./helpers"
-import { initMorph, morph } from "./morph"
+import { initMorph, morph, clearSetValueTimer } from "./morph"
 import { ServerMessage, ClientMessage, EventMessage } from "./types/ws"
 
 interface WebSocketState {
@@ -34,11 +34,11 @@ export function connectWebSocket(location: Location): WebSocket {
     numRetries: 0,
     waitTime: INITIAL_WAIT_TIME,
   }
-  addWebSocketHandlers(state)
+  addWebSocketHandlers(state, location)
   return state.ws
 }
 
-function addWebSocketHandlers(state: WebSocketState): void {
+function addWebSocketHandlers(state: WebSocketState, location: Location): void {
   const ws = state.ws
 
   ws.addEventListener("open", () => {
@@ -76,7 +76,7 @@ function addWebSocketHandlers(state: WebSocketState): void {
       if (process.env.NODE_ENV !== "test") {
         setTimeout(() => {
           state.ws = new WebSocket(state.url)
-          addWebSocketHandlers(state)
+          addWebSocketHandlers(state, location)
         }, state.waitTime)
       }
       state.numRetries += 1
@@ -148,23 +148,46 @@ function handleEvent(
         switch (eventName) {
           case "input":
           case "change":
-            message.event = { value: inputValue(target) }
+            message.event = {
+              name: (target as HTMLInputElement).name || "",
+              value: inputValue(target),
+            }
+
+            // The debouncing in maybeSetValue() is not foolproof. Say the user
+            // types a key during the debounce interval. It's possible for the
+            // server to send down a controlled value after the debounced
+            // callback has been run. Then the old value will be set, and if the
+            // user types anything further, his/her initial key press will be
+            // overidden and hence not take effect.
+            //
+            // To avoid this, each time the user types a key, we stop the
+            // debounced callback from running. We expect the server to send
+            // a new controlled value in response to this event, so we'll
+            // receive that value shortly and set it appropriately.
+            clearSetValueTimer(target)
             break
 
           case "keydown":
           case "keypress":
           case "keyup":
-            message.event = { key: (event as KeyboardEvent).key }
+            message.event = {
+              name: (target as HTMLInputElement).name || "",
+              key: (event as KeyboardEvent).key,
+            }
             break
 
           case "submit":
             const elems = target.querySelectorAll<HTMLInputElement>(
               "input, select, textarea, button",
             )
-            const fields: { [key: string]: any } = {}
+            const fields: Record<string, unknown> = {}
 
             Array.from(elems).forEach(elem => {
-              if (!elem.name || elem.disabled) {
+              if (
+                !elem.name ||
+                elem.disabled ||
+                (elem.type === "radio" && !elem.checked)
+              ) {
                 return
               }
               fields[elem.name] = inputValue(elem)

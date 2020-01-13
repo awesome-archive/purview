@@ -4,7 +4,8 @@
 
 **What if your React components ran on the server-side?** The server renders
 components to HTML and sends it to the client. The client renders HTML and
-notifies the server of DOM events.
+notifies the server of DOM events. The server executes event handlers and
+lifecycle events, and it maintains the state of each component.
 
 With this architecture, your components can directly make database queries,
 contact external services, etc, as they're running exclusively on the server.
@@ -193,22 +194,25 @@ information associated with certain events and creates its own event objects.
 Here's a description of the event object that Purview passes to your handler for
 various event types:
 
-- `onInput`: The event object is of type `InputEvent<T> = { value: T }`.  `T` is
+- `onInput`: The event object is of type `InputEvent<T> = { name: string, value:
+  T }`, where `name` is the name of the input and `value` is its value. `T` is
   `boolean` for checkboxes, `number` for `<input type="number">`, and `string`
   for all other inputs.
 
-- `onChange`: The event object is of type `ChangeEvent<T> = { value: T }`.  `T`
-  is `boolean` for checkboxes, `number` for `<input type="number">`, `string[]`
-  for `<select multiple>` and `string` for all other inputs.
+- `onChange`: The event object is of type `ChangeEvent<T> = { name: string,
+  value: T }`, where `name` is the name of the input and `value` is its value.
+  `T` is `boolean` for checkboxes, `number` for `<input type="number">`,
+  `string[]` for `<select multiple>` and `string` for all other inputs.
 
 - `onKeyDown`, `onKeyPress`, and `onKeyUp`: The event object is of type
-  `KeyEvent = { key: string }`, where `key` is the [key that was pressed][key].
+  `KeyEvent = { name: string, key: string }`, where `name` is the name of the
+  input and `key` is the [key that was pressed][key].
 
-- `onSubmit`: The event object is of type `SubmitEvent = { fields: { [key:
-  string]: any } }`. `fields` is a mapping of form field names to values. It is
-  your responsibility to perform validation on `fields` for both the types and
-  values, just as you would do if you were writing a server-side route handler.
-  [class-validator][class-validator] is a helpful library here.
+- `onSubmit`: The event object is of type `SubmitEvent = { fields:
+  Record<string, unknown> }`. `fields` is a mapping of form field names to
+  values. It is your responsibility to perform validation on `fields` for both
+  the types and values, just as you would do if you were writing a server-side
+  route handler.
 
   When you add an `onSubmit` handler, the default action of the submit event is
   automatically prevented (i.e. via `event.preventDefault()`). This stops the
@@ -247,6 +251,12 @@ from a database or service prior to the component rendering.
 The call to `Purview.render()` returns a promise that resolves once all initial
 state has been fetched and components have been rendered. This prevents the user
 from seeing a flash of empty content before your components load their state.
+
+Do not assign/modify instance variables on your components within
+`getInitialState()`. On page load, when the WebSocket connection is established,
+Purview will re-initialize all components with their saved state from the last
+render, and it won't call `getInitialState()`. Hence, any instance variables you
+assign/modify within this function may not be reflected.
 
 ### Other differences
 In addition to the above, Purview also differs from React in the following ways:

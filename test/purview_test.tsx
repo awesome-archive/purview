@@ -21,7 +21,6 @@ import {
   SeenEventNamesMessage,
   ServerMessage,
   ClientMessage,
-  PNodeRegular,
 } from "../src/types/ws"
 import { MAX_SET_STATE_AFTER_UNMOUNT } from "../src/component"
 
@@ -75,6 +74,14 @@ test("createElem select", () => {
     "attributes",
     { selected: true, "data-controlled": true },
   )
+
+  const select4 = (
+    <select>
+      <option selected={undefined}>First</option>
+    </select>
+  )
+  expect(select4.attributes).toEqual({})
+  expect(select4.children).toHaveProperty("attributes", {})
 })
 
 test("createElem textarea", () => {
@@ -85,6 +92,10 @@ test("createElem textarea", () => {
   const textarea2 = <textarea value="foo" />
   expect(textarea2.attributes).toEqual({ "data-controlled": true })
   expect(textarea2.children).toEqual("foo")
+
+  const textarea3 = <textarea value={undefined} />
+  expect(textarea3.attributes).toEqual({})
+  expect(textarea3.children).toEqual([])
 })
 
 test("createElem checkbox", () => {
@@ -106,6 +117,9 @@ test("createElem checkbox", () => {
     type: "checkbox",
     "data-controlled": true,
   })
+
+  const checkbox5 = <input type="checkbox" checked={undefined} />
+  expect(checkbox5.attributes).toEqual({ type: "checkbox" })
 })
 
 test("createElem input", () => {
@@ -118,6 +132,9 @@ test("createElem input", () => {
     "data-controlled": true,
     value: "foo",
   })
+
+  const input3 = <input type="text" value={undefined} />
+  expect(input3.attributes).toEqual({ type: "text" })
 })
 
 test("createElem intrinsic falsy attributes", () => {
@@ -221,12 +238,9 @@ test("render lowercase attributes", async () => {
   await renderAndConnect(<Foo />, async conn => {
     await instance.setState({})
 
-    const message = (await conn.messages.next()) as UpdateMessage
+    const message = await conn.messages.next()
     expect(message.type).toBe("update")
-    expect((message.pNode as PNodeRegular).data.attrs).toHaveProperty(
-      "autocomplete",
-      "on",
-    )
+    expect(message.pNode.data.attrs).toHaveProperty("autocomplete", "on")
     expect(message.componentID).toBe(conn.rootID)
   })
 })
@@ -277,7 +291,7 @@ test("render setState", async () => {
   await renderAndConnect(<Foo />, async conn => {
     await instance.setState({ text: "hello" })
 
-    const message = (await conn.messages.next()) as UpdateMessage
+    const message = await conn.messages.next()
     expect(message.type).toBe("update")
     expect(message.componentID).toBe(conn.rootID)
 
@@ -305,7 +319,7 @@ test("render event", async () => {
     }
     conn.ws.send(JSON.stringify(event))
 
-    const message = (await conn.messages.next()) as UpdateMessage
+    const message = await conn.messages.next()
     expect(message.type).toBe("update")
     expect(message.componentID).toBe(conn.rootID)
     expect(concretize(message.pNode).textContent).toBe("hello")
@@ -330,7 +344,7 @@ test("render event capture", async () => {
     }
     conn.ws.send(JSON.stringify(event))
 
-    const message = (await conn.messages.next()) as UpdateMessage
+    const message = await conn.messages.next()
     expect(message.type).toBe("update")
     expect(message.componentID).toBe(conn.rootID)
     expect(concretize(message.pNode).textContent).toBe("hello")
@@ -338,24 +352,23 @@ test("render event capture", async () => {
 })
 
 test("render input/change event", async () => {
-  let inputValue: string
-  let checkboxValue: boolean
-  let changeValue: string[]
+  let inputEvent: InputEvent
+  let checkboxEvent: InputEvent<boolean>
+  let selectEvent: ChangeEvent<string[]>
 
   class Foo extends Purview.Component<{}, {}> {
     state = {}
 
-    handleInput = (event: InputEvent) => (inputValue = event.value)
-    handleCheckbox = (event: InputEvent<boolean>) =>
-      (checkboxValue = event.value)
-    handleChange = (event: ChangeEvent<string[]>) => (changeValue = event.value)
+    handleInput = (event: InputEvent) => (inputEvent = event)
+    handleCheckbox = (event: InputEvent<boolean>) => (checkboxEvent = event)
+    handleSelect = (event: ChangeEvent<string[]>) => (selectEvent = event)
 
     render(): JSX.Element {
       return (
         <div>
           <input onInput={this.handleInput} />
           <input type="checkbox" onInput={this.handleCheckbox} />
-          <select onChange={this.handleChange} multiple={true}>
+          <select onChange={this.handleSelect} multiple={true}>
             <option>Foo</option>
             <option>Bar</option>
             <option>Baz</option>
@@ -370,7 +383,7 @@ test("render input/change event", async () => {
       type: "event",
       rootID: conn.rootID,
       eventID: conn.elem.children[0].getAttribute("data-input") as string,
-      event: { value: 13 },
+      event: { name: "foo", value: 13 },
     }
     conn.ws.send(JSON.stringify(invalidEvent1))
 
@@ -378,7 +391,7 @@ test("render input/change event", async () => {
       type: "event",
       rootID: conn.rootID,
       eventID: conn.elem.children[1].getAttribute("data-input") as string,
-      event: { value: ["Bar", "Baz"] },
+      event: { name: "bar", value: ["Bar", "Baz"] },
     }
     conn.ws.send(JSON.stringify(invalidEvent2))
 
@@ -386,21 +399,48 @@ test("render input/change event", async () => {
       type: "event",
       rootID: conn.rootID,
       eventID: conn.elem.children[2].getAttribute("data-change") as string,
-      event: { value: true },
+      event: { name: "baz", value: true },
     }
     conn.ws.send(JSON.stringify(invalidEvent3))
 
+    const invalidEvent4: EventMessage = {
+      type: "event",
+      rootID: conn.rootID,
+      eventID: conn.elem.children[0].getAttribute("data-input") as string,
+      event: { name: null as any, value: "foo" },
+    }
+    conn.ws.send(JSON.stringify(invalidEvent4))
+
+    // tslint:disable no-object-literal-type-assertion
+    const invalidEvent5: EventMessage = {
+      type: "event",
+      rootID: conn.rootID,
+      eventID: conn.elem.children[0].getAttribute("data-input") as string,
+      event: { name: "foo", value: "foo", other: 1 } as InputEvent,
+    }
+    conn.ws.send(JSON.stringify(invalidEvent5))
+
+    const invalidEvent6: EventMessage = {
+      type: "event",
+      rootID: conn.rootID,
+      eventID: conn.elem.children[0].getAttribute("data-input") as string,
+      event: { name: "foo", value: "foo" },
+      other: 1,
+    } as EventMessage
+    // tslint:enable no-object-literal-type-assertion
+    conn.ws.send(JSON.stringify(invalidEvent6))
+
     // Wait for handlers to be called.
     await new Promise(resolve => setTimeout(resolve, 25))
-    expect(inputValue).toBe(undefined)
-    expect(checkboxValue).toBe(undefined)
-    expect(changeValue).toEqual(undefined)
+    expect(inputEvent).toBe(undefined)
+    expect(checkboxEvent).toBe(undefined)
+    expect(selectEvent).toBe(undefined)
 
     const event1: EventMessage = {
       type: "event",
       rootID: conn.rootID,
       eventID: conn.elem.children[0].getAttribute("data-input") as string,
-      event: { value: "value" },
+      event: { name: "", value: "value" },
     }
     conn.ws.send(JSON.stringify(event1))
 
@@ -408,7 +448,7 @@ test("render input/change event", async () => {
       type: "event",
       rootID: conn.rootID,
       eventID: conn.elem.children[1].getAttribute("data-input") as string,
-      event: { value: true },
+      event: { name: "foo", value: true },
     }
     conn.ws.send(JSON.stringify(event2))
 
@@ -416,23 +456,23 @@ test("render input/change event", async () => {
       type: "event",
       rootID: conn.rootID,
       eventID: conn.elem.children[2].getAttribute("data-change") as string,
-      event: { value: ["Bar", "Baz"] },
+      event: { name: "bar", value: ["Bar", "Baz"] },
     }
     conn.ws.send(JSON.stringify(event3))
 
     // Wait for handlers to be called.
     await new Promise(resolve => setTimeout(resolve, 25))
-    expect(inputValue).toBe((event1.event as InputEvent).value)
-    expect(checkboxValue).toBe((event2.event as InputEvent).value)
-    expect(changeValue).toEqual((event3.event as ChangeEvent).value)
+    expect(inputEvent).toEqual(event1.event)
+    expect(checkboxEvent).toEqual(event2.event)
+    expect(selectEvent).toEqual(event3.event)
   })
 })
 
 test("render change event other element", async () => {
-  let value: number
+  let changeEvent: ChangeEvent<any>
   class Foo extends Purview.Component<{}, {}> {
     state = {}
-    handleChange = (event: ChangeEvent<any>) => (value = event.value)
+    handleChange = (event: ChangeEvent<any>) => (changeEvent = event)
 
     render(): JSX.Element {
       return <div onChange={this.handleChange} />
@@ -444,33 +484,33 @@ test("render change event other element", async () => {
       type: "event",
       rootID: conn.rootID,
       eventID: conn.elem.getAttribute("data-change") as string,
-      event: { foo: 3 } as any,
+      event: { name: "", foo: 3 } as any,
     }
     conn.ws.send(JSON.stringify(invalidEvent))
 
     // Wait for handlers to be called.
     await new Promise(resolve => setTimeout(resolve, 25))
-    expect(value).toBe(undefined)
+    expect(changeEvent).toBe(undefined)
 
     const event: EventMessage = {
       type: "event",
       rootID: conn.rootID,
       eventID: conn.elem.getAttribute("data-change") as string,
-      event: { value: 3 },
+      event: { name: "foo", value: 3 },
     }
     conn.ws.send(JSON.stringify(event))
 
     // Wait for handlers to be called.
     await new Promise(resolve => setTimeout(resolve, 25))
-    expect(value).toBe((event.event as ChangeEvent).value)
+    expect(changeEvent).toEqual(event.event)
   })
 })
 
 test("render keydown event", async () => {
-  let key: string
+  let keyEvent: KeyEvent
   class Foo extends Purview.Component<{}, {}> {
     state = {}
-    handleKeyDown = (event: KeyEvent) => (key = event.key)
+    handleKeyDown = (event: KeyEvent) => (keyEvent = event)
 
     render(): JSX.Element {
       return <input onKeyDown={this.handleKeyDown} />
@@ -482,30 +522,30 @@ test("render keydown event", async () => {
       type: "event",
       rootID: conn.rootID,
       eventID: conn.elem.getAttribute("data-keydown") as string,
-      event: { key: 13 as any },
+      event: { name: "", key: 13 as any },
     }
     conn.ws.send(JSON.stringify(invalidEvent))
 
     // Wait for handlers to be called.
     await new Promise(resolve => setTimeout(resolve, 25))
-    expect(key).toBe(undefined)
+    expect(keyEvent).toBe(undefined)
 
     const event: EventMessage = {
       type: "event",
       rootID: conn.rootID,
       eventID: conn.elem.getAttribute("data-keydown") as string,
-      event: { key: "k" },
+      event: { name: "foo", key: "k" },
     }
     conn.ws.send(JSON.stringify(event))
 
     // Wait for handlers to be called.
     await new Promise(resolve => setTimeout(resolve, 25))
-    expect(key).toBe((event.event as KeyEvent).key)
+    expect(keyEvent).toEqual(event.event)
   })
 })
 
 test("render submit event", async () => {
-  let fields: { [key: string]: any }
+  let fields: Record<string, unknown>
   class Foo extends Purview.Component<{}, {}> {
     state = {}
     handleSubmit = (event: SubmitEvent) => (fields = event.fields)
@@ -582,7 +622,7 @@ test("render retain state", async () => {
     }
     conn.ws.send(JSON.stringify(event1))
 
-    const message1 = (await conn.messages.next()) as UpdateMessage
+    const message1 = await conn.messages.next()
     expect(message1.type).toBe("update")
     expect(message1.componentID).toBe(span.getAttribute("data-component-id"))
     expect(concretize(message1.pNode).textContent).toBe("101")
@@ -594,7 +634,7 @@ test("render retain state", async () => {
     }
     conn.ws.send(JSON.stringify(event2))
 
-    const message2 = (await conn.messages.next()) as UpdateMessage
+    const message2 = await conn.messages.next()
     expect(message2.type).toBe("update")
     expect(message2.componentID).toBe(conn.rootID)
 
@@ -640,17 +680,18 @@ test("render directly nested", async () => {
 
   await renderAndConnect(<Foo />, async conn => {
     await bar.setState(state => ({ count: state.count + 1 }))
-    const message1 = (await conn.messages.next()) as UpdateMessage
+    const message1 = await conn.messages.next()
     expect(message1.type).toBe("update")
     // Since Foo and Bar should share the same component ID.
     expect(message1.componentID).toBe(conn.rootID)
 
     const p1 = concretize(message1.pNode)
     expect(p1.getAttribute("data-component-id")).toBe(conn.rootID)
+    expect(p1.hasAttribute("data-root")).toBe(true)
     expect(p1.textContent).toBe("1")
 
     await foo.setState({ text: "hello" })
-    const message2 = (await conn.messages.next()) as UpdateMessage
+    const message2 = await conn.messages.next()
     expect(message2.type).toBe("update")
     expect(message2.componentID).toBe(conn.rootID)
 
@@ -786,7 +827,7 @@ test("locked mount cycle", async () => {
     let lockPromise = barInstance._lock(
       async () => new Promise(resolve => setTimeout(resolve, 25)),
     )
-    fooInstance._triggerMount()
+    void fooInstance._triggerMount()
 
     barMountCount = 0
     fooMountCount = 0
@@ -851,25 +892,44 @@ test("componentWillReceiveProps", async () => {
     }
 
     render(): JSX.Element {
-      return <Bar count={1} />
+      return <Bar count={this.state.count} />
     }
   }
 
-  class Bar extends Purview.Component<{ count: number }, {}> {
+  class Bar extends Purview.Component<{ count: number }, { label: string }> {
+    state = { label: "Count" }
+
     componentWillReceiveProps(props: { count: number }): void {
       receivedProps = props
+      void this.setState({ label: "New Count" })
     }
 
     render(): JSX.Element {
-      return <p>{this.props.count}</p>
+      return (
+        <p>
+          {this.state.label}: {this.props.count}
+        </p>
+      )
     }
   }
 
   await renderAndConnect(<Foo />, async conn => {
     expect(receivedProps).toBe(null)
-    instance.setState({ count: 1 })
-    await conn.messages.next()
+    void instance.setState({ count: 1 })
+
+    const message = await conn.messages.next()
+    expect(message.type).toBe("update")
+    expect(message.componentID).toBe(conn.rootID)
+
+    const p = concretize(message.pNode)
+    expect(p.textContent).toBe("New Count: 1")
     expect(receivedProps).toEqual({ count: 1, children: [] })
+
+    const nextMessage = await Promise.race([
+      conn.messages.next(),
+      new Promise<undefined>(resolve => setTimeout(resolve, 50)),
+    ])
+    expect(nextMessage).toBe(undefined)
   })
 })
 
@@ -894,9 +954,9 @@ test("event names", async () => {
 
   await renderAndConnect(<Foo />, async conn => {
     expect(conn.updateMessage.newEventNames).toEqual(["change"])
-    instance.setState({ enabled: true })
+    void instance.setState({ enabled: true })
 
-    const message1 = (await conn.messages.next()) as UpdateMessage
+    const message1 = await conn.messages.next()
     expect(message1.type).toBe("update")
     expect(message1.componentID).toBe(conn.rootID)
     expect(message1.newEventNames).toEqual(["change", "keydown"])
@@ -909,9 +969,9 @@ test("event names", async () => {
 
     // Must wait for seenEventNames to propagate to server.
     await new Promise(resolve => setTimeout(resolve, 25))
-    instance.setState({ enabled: true })
+    void instance.setState({ enabled: true })
 
-    const message2 = (await conn.messages.next()) as UpdateMessage
+    const message2 = await conn.messages.next()
     expect(message2.type).toBe("update")
     expect(message2.componentID).toBe(conn.rootID)
     expect(message2.newEventNames).toEqual(["keydown"])
@@ -939,9 +999,9 @@ test("invalid event names", async () => {
 
   await renderAndConnect(<Foo />, async conn => {
     expect(conn.updateMessage.newEventNames).toEqual(["change"])
-    instance.setState({ enabled: true })
+    void instance.setState({ enabled: true })
 
-    const message1 = (await conn.messages.next()) as UpdateMessage
+    const message1 = await conn.messages.next()
     expect(message1.type).toBe("update")
     expect(message1.componentID).toBe(conn.rootID)
     expect(message1.newEventNames).toEqual(["change", "keydown"])
@@ -954,9 +1014,9 @@ test("invalid event names", async () => {
 
     // Must wait for seenEventNames to propagate to server.
     await new Promise(resolve => setTimeout(resolve, 25))
-    instance.setState({ enabled: true })
+    void instance.setState({ enabled: true })
 
-    const message2 = (await conn.messages.next()) as UpdateMessage
+    const message2 = await conn.messages.next()
     expect(message2.type).toBe("update")
     expect(message2.componentID).toBe(conn.rootID)
     expect(message2.newEventNames).toEqual(["change", "keydown"])
@@ -1010,7 +1070,7 @@ test("child map ordering", async () => {
     // Attempt to force reordering of the two <Bar /> elements in the child map
     // by locking the first.
     await firstBar._lock(async () => {
-      foo.setState({})
+      void foo.setState({})
       await new Promise(resolve => setTimeout(resolve, 25))
     })
     await conn.messages.next()
@@ -1067,19 +1127,19 @@ test("render consistency", async () => {
   }
 
   await renderAndConnect(<Foo />, async conn => {
-    foo.setState({ showBaz: true })
+    void foo.setState({ showBaz: true })
     await new Promise(resolve => setTimeout(resolve, 50))
-    bar.setState({ text: "Hi" })
+    void bar.setState({ text: "Hi" })
 
     const p1 = conn.elem.querySelector("p")!
-    const message1 = (await conn.messages.next()) as UpdateMessage
+    const message1 = await conn.messages.next()
     expect(message1.type).toBe("update")
     expect(message1.componentID).toBe(p1.getAttribute("data-component-id"))
 
     const p2 = concretize(message1.pNode)
     expect(p2.textContent).toBe("Hi")
 
-    const message2 = (await conn.messages.next()) as UpdateMessage
+    const message2 = await conn.messages.next()
     expect(message2.type).toBe("update")
     expect(message2.componentID).toBe(conn.rootID)
 
@@ -1138,7 +1198,7 @@ test("reconnect", async () => {
     expect(mountCount).toBe(1)
     expect(unmountCount).toBe(0)
 
-    instance.setState({ text: "hello" })
+    void instance.setState({ text: "hello" })
     await conn.messages.next()
     conn.ws.close()
 
@@ -1241,6 +1301,47 @@ test("reconnect new child component mount cycle", async () => {
   })
 })
 
+test("reconnect getInitialState()", async () => {
+  let count = 0
+  class Foo extends Purview.Component<{}, {}> {
+    async getInitialState(): Promise<{}> {
+      count += 1
+      return {}
+    }
+
+    render(): JSX.Element {
+      return <div />
+    }
+  }
+
+  await renderAndConnect(<Foo />, async conn => {
+    expect(count).toBe(1)
+    conn.ws.close()
+
+    // Wait for state to be saved and unmount to occur.
+    await new Promise(resolve => setTimeout(resolve, 25))
+    const origin = `http://localhost:${conn.port}`
+    const ws = new WebSocket(`ws://localhost:${conn.port}`, { origin })
+    await new Promise(resolve => ws.addEventListener("open", resolve))
+
+    const connect: ClientMessage = {
+      type: "connect",
+      rootIDs: [conn.rootID],
+    }
+    ws.send(JSON.stringify(connect))
+
+    await new Promise(resolve => {
+      ws.addEventListener("message", messageEvent => {
+        const message: ServerMessage = JSON.parse(messageEvent.data.toString())
+        expect(message.type).toBe("update")
+        resolve()
+      })
+    })
+    expect(count).toBe(2)
+    ws.close()
+  })
+})
+
 test("reconnect early", async () => {
   class Foo extends Purview.Component<{}, {}> {
     render(): JSX.Element {
@@ -1263,7 +1364,7 @@ test("reconnect early", async () => {
 })
 
 test("setState() after unmount", async () => {
-  let instance: Foo
+  let instance: Foo = null as any
   class Foo extends Purview.Component<{}, {}> {
     constructor(props: {}) {
       super(props)
@@ -1280,9 +1381,9 @@ test("setState() after unmount", async () => {
   await new Promise(resolve => setTimeout(resolve, 25))
 
   for (let i = 0; i < MAX_SET_STATE_AFTER_UNMOUNT; i++) {
-    await instance!.setState({})
+    await instance.setState({})
   }
-  await expect(instance!.setState({})).rejects.toThrow(
+  await expect(instance.setState({})).rejects.toThrow(
     "setState() called after unmount",
   )
 })
